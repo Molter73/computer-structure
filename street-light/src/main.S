@@ -16,7 +16,11 @@
 #define RED_LIGHT PB0
 #define YELLOW_LIGHT PB1
 #define GREEN_LIGHT PB2
-#define LIGHTS_MASK ((1 << RED_LIGHT) | (1 << YELLOW_LIGHT) | (1 << GREEN_LIGHT))
+#define PED_RED_LIGHT PB3
+#define PED_GREEN_LIGHT PB4
+#define LIGHTS_MASK ((1 << RED_LIGHT) | (1 << YELLOW_LIGHT) | \
+                     (1 << GREEN_LIGHT) | (1 << PED_RED_LIGHT) | \
+                     (1 << PED_GREEN_LIGHT))
 
 ; Using some registers as global variables
 #define lights_time_base r20
@@ -54,6 +58,7 @@ main:
     ldi r16, ~LIGHTS_MASK
     out _SFR_IO_ADDR(PORTB), r16
     sbi _SFR_IO_ADDR(PORTB), RED_LIGHT
+    sbi _SFR_IO_ADDR(PORTB), PED_GREEN_LIGHT
 
     ; Set Timer 0 to run on fclk/1024
     ldi r16, 0x05
@@ -106,18 +111,24 @@ handle_red:
     ldi hold_state, TWO_SECONDS
 
     sbi _SFR_IO_ADDR(PORTB), RED_LIGHT
+    sbi _SFR_IO_ADDR(PORTB), PED_GREEN_LIGHT
     rjmp loop
 
 handle_green:
     ldi hold_state, TWO_SECONDS
 
     sbi _SFR_IO_ADDR(PORTB), GREEN_LIGHT
+    sbi _SFR_IO_ADDR(PORTB), PED_RED_LIGHT
     rjmp loop
 
 handle_yellow:
     ldi hold_state, ONE_SECOND
 
     sbi _SFR_IO_ADDR(PORTB), YELLOW_LIGHT
+    sbrc state, 1
+    sbi _SFR_IO_ADDR(PORTB), PED_RED_LIGHT
+    sbrs state, 1
+    sbi _SFR_IO_ADDR(PORTB), PED_GREEN_LIGHT
     rjmp loop
 
 ; Timer 0 interrupt handler
