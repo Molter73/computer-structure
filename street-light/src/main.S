@@ -26,7 +26,7 @@
 #define lights_time_base r20
 #define hold_state r21
 
-; R22 will be the used to hold the state our program is in, we have 4 states:
+; R22 will be used to hold the state our program is in, we have 4 states:
 ;   00: Red light is on
 ;   01: Yellow light is on, moving to green
 ;   10: Green light is on

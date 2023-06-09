@@ -1,0 +1,207 @@
+\documentclass{article}
+
+\usepackage{titling}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\renewcommand{\contentsname}{Contenidos}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=blue,
+}
+
+\urlstyle{same}
+
+\lstdefinelanguage{atmegaAsm}{
+    sensitive=false,
+    alsoletter={\.},
+    keywordsprefix={\#},
+    comment=[l]{;},
+    % Instructions
+    keywords=[1]{
+        ldi, lds, ld, sts, out, sbi, sei, tst, brne, dec, inc, sbrc, in, andi,
+        rjmp, push, pop, add, reti
+    },
+    % Directives
+    keywords=[2]{
+        .text, .global,
+    },
+    % Registers
+    keywords=[3]{
+        r16, r17, r20, r21, r22, DDRB, PORTB, TCCR0B, TCNT0, TIMSK0, SREG,
+    }
+}
+
+\definecolor{mGreen}{rgb}{0,0.6,0}
+\definecolor{mGray}{rgb}{0.5,0.5,0.5}
+\definecolor{mPurple}{rgb}{0.58,0,0.82}
+\definecolor{backgroundColour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{atmegaAsm}{
+    backgroundcolor=\color{backgroundColour},
+    commentstyle=\color{mGreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{mGray},
+    stringstyle=\color{mPurple},
+    basicstyle=\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+}
+
+\begin{document}
+
+\title{Actividad 1 - Semáforo}
+\author{Moltrasio, Mauro Ezequiel}
+\date{}
+\renewcommand{\abstractname}{\vspace{-\baselineskip}}
+
+\begin{titlingpage}
+    \maketitle
+    \begin{abstract}
+
+        Clase: Estructura de computadores.
+
+        Profesor: José Delgado Pérez.
+    \end{abstract}
+\end{titlingpage}
+
+\tableofcontents
+
+\section{Introducción}
+
+En este documento se describirán los pasos timados para la codificación de un
+semáforo con una placa Arduino uno. El lenguaje de prigramación elegido será
+assembly y se utilizará PlatformIO para simplificar la compilación y carga del
+código a la placa.
+
+\section{Primeros pasos}
+
+Tras instalar PlatformIO, se procedió a utilizar un código de ejemplo con un
+LED titilando (blinky) para corroborar que todo funcionara correctamente.
+El código de ejemplo utilizado como punto de inicio se puede encontrar en el
+siguiente link: \url{https://gitlab.com/jjchico-edc/avr-bare/-/blob/master/projects/01-blink-asm/main.S}
+
+Si bien se podría utilizar la función wait provista en ese ejemplo para
+codificar el semáforo, una forma más sencilla es utilizar un timer, por lo que
+se decidió cambiar por este enfoque.
+
+\section{Configurando Timer 0}
+
+Se eligió utilizar el timer 0 del procesador, ya que es un timer de uso
+general y nos permitirá crear una base de tiempo sobre la cual basar nuestra
+máquina de estados (más sobre la máquina de estados en las siguientes
+secciones).
+
+Para experimentar con el timer 0, primero se procedió a reemplazar la función
+wait del ejemplo blinky con el flag de overflow de dicho timer. Este flag es
+el bit TOV0 del registro TIFR0.
+
+Con el objetivo de tener un blink que apenas sea perceptible al ojo humano, se
+configuraron los bits CS[0:2] del registro TCCR0B para utilizar una base de
+tiempo de fclk/1024 (valor 0x05). Este valor da una frecuencia de
+16MHz / 1024 = 15,625kHz. Esto combinado con la cuenta de 8 bits del timer nos
+da un blink de aproximadamente 61Hz, lo cual es apenas visible, pero suficiente
+para poder ver el timer funcionando.
+
+Finalmente, se cambió de utilizar el chequeo del flag TOV0 en línea con el lazo
+principal a utilizar la interrupción de overflow del timer. Esto se consigue
+seteando el bit TOIE0 del registro TIMSK0, usando la instrucción SEI para
+habilitar las interrupciones globales y definiendo la rutina de manejo de
+interrupcion TIMER0{\_}OVF{\_}vect. Cabe aclarar que esta última rutina viene
+provista por el framework avr-libc que utiliza PlatformIO, caso contrario
+deberíamos proveer la instrucción jmp correcta en el vector de interrupciones.
+
+Con la interrupción del timer funcionando, estamos en condiciones de plantear
+la resolución del semáforo.
+
+\section{Resolución de un semáforo}
+
+La lógica de un semáforo se puede considerar como una máquina de estados con
+4 estados (enumerados en binario):
+
+\begin{itemize}
+    \item 00: Luz roja encendida.
+    \item 01: Luz amarilla encendida, cambiando a verde.
+    \item 10: Luz verde encendida.
+    \item 11: Luz amarilla encendida, cambiando a rojo.
+\end{itemize}
+
+Podemos ver un par de patrones en la lista anterior.
+En principio, todos los estados se pueden visitar simplemente incrementando el
+valor de la variable que contiene el estado.
+También se ve que el bit menos significativo nos define si el semáforo tiene
+encendida la luz amarilla o si está en verde o rojo y en caso de estar a 0,
+el segundo bit nos define que estamos en rojo cuando está a 0 y verde cuando
+está a 1.
+Todo esto nos será de utilidad a la hora de plantear el código.
+
+Sabiendo cómo será la máquina de estado, debemos primero definir una base de
+tiempo adecuada para poder iterar sobre los estados. Utilizando el timer 0
+que se describió en la sección anterior que tiene una frecuencia de cuenta de
+15,625 kHz, se decidió crear una base de tiempo de 10ms, la cual es pequeña,
+pero nos será de utilidad en futuras actividades para crear funciones de
+antirrebote. Para que la interrupción del timer se dispare cada 10ms,
+si una cuenta es de 1/15,625kHz = 64us = 0.064ms, entonces se necesitan
+156,25 cuentas. Podemos redondear a 156 y como el timer cuenta hasta 255,
+el registro TCNT0 deberá recargarse con el valor 255 - 156 = 99 cada vez que
+se genere la interrupción. Esta base de tiempo se puede complementar con otro
+contador por software para generar bases más largas.
+
+Con la base de tiempo definida y una primera aproximación de la máquina de
+estados, podemos empezar a definir dónde vivirán algunas de las variables
+necesarias. Dada la simplicidad de la aplicación y la gran cantidad de
+registros disponibles en el procesador, se dicidió utilizar algunos de estos
+para definir variables directamente, especificamente:
+
+\begin{itemize}
+    \item R16 y R17: Se utilizarán como registros generales para operaciones varias.
+    \item R20: Mantendrá una base de tiempo para los cambios de estado del semáforo.
+    \item R21: Trabajará en conjunto con R20 para tener distintos tiempos en los distintos estados.
+    \item R22: Almacenará el estado de nuestro semáforo propiamente dicho.
+\end{itemize}
+
+También podemos definir los pines que se utilizarán para manejar las distintas
+luces:
+
+\begin{itemize}
+    \item PB0: Luz roja para autos.
+    \item PB1: Luz amarilla para autos.
+    \item PB2: Luz verde para autos.
+    \item PB3: Luz roja para peatones.
+    \item PB4: Luz verde para peatones.
+\end{itemize}
+
+Aún no hemos hablado sobre cómo será el manejo de las luces peatonales, pero si
+planteamos una máquina de estados similar a la del semáforo de autos:
+
+\begin{itemize}
+    \item 00: Luz peatonal verde encendida.
+    \item 01: Luz peatonal verde encendida.
+    \item 10: Luz peatonal roja encendida.
+    \item 11: Luz peatonal roja encendida.
+\end{itemize}
+
+Vemos que en realidad sólo tiene 2 estados, pero estos se pueden duplicar para
+que coincidan con nuestra máquina de estado original. Por lo tanto, en lugar
+de plantear otra máquina de estado, el código utilizará una única máquina y
+controlará ambos semáforos de forma adecuada en base al estado en el que se
+está.
+
+En este punto tenemos todos los elementos necesarios para plantear la
+resolución al problema.
+
+\section{Código final}
+\lstinputlisting[style=atmegaAsm,language=atmegaAsm]{../src/main.S}
+
+\end{document}
