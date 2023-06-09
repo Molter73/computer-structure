@@ -24,7 +24,7 @@
     % Instructions
     keywords=[1]{
         ldi, lds, ld, sts, out, sbi, sei, tst, brne, dec, inc, sbrc, in, andi,
-        rjmp, push, pop, add, reti
+        rjmp, push, pop, add, reti, cbi, sbrs, lsl, sbis, sbr,
     },
     % Directives
     keywords=[2]{
@@ -32,7 +32,8 @@
     },
     % Registers
     keywords=[3]{
-        r16, r17, r20, r21, r22, DDRB, PORTB, TCCR0B, TCNT0, TIMSK0, SREG,
+        r16, r17, r20, r21, r22, r23, DDRB, PORTB, TCCR0B, TCNT0, TIMSK0, SREG,
+        DDRD, PORTD, PB0, PB1, PB2, PB3, PB4, PB5, PD2, SPH, SPL,
     }
 }
 
@@ -61,7 +62,7 @@
 
 \begin{document}
 
-\title{Actividad 1 - Semáforo}
+\title{Actividad 2 - Semáforo con pulsador}
 \author{Moltrasio, Mauro Ezequiel}
 \date{}
 \renewcommand{\abstractname}{\vspace{-\baselineskip}}
@@ -80,55 +81,40 @@
 
 \section{Introducción}
 
-En este documento se describirán los pasos timados para la codificación de un
-semáforo con una placa Arduino uno. El lenguaje de prigramación elegido será
-assembly y se utilizará PlatformIO para simplificar la compilación y carga del
-código a la placa.
+Este documento describe una continuación a la actividad 1, se aprovechó la
+mayor parte del código de dicha actividad y no se volverá a describir el
+proceso para describir cómo se llegó a ese punto. En lugar de esto, se
+describirán los cambios realizados a ese código para resolver la actividad de
+semáforo con pulsador para peatones.
 
-\section{Primeros pasos}
+\section{Manejo de un pulsador}
 
-Tras instalar PlatformIO, se procedió a utilizar un código de ejemplo con un
-LED titilando (blinky) para corroborar que todo funcionara correctamente.
-El código de ejemplo utilizado como punto de inicio se puede encontrar en el
-siguiente link: \url{https://gitlab.com/jjchico-edc/avr-bare/-/blob/master/projects/01-blink-asm/main.S}
+La primer gran diferencia con la actividad anterior viene clara desde el
+enunciado, debemos manejar un pulsador. Con este propósito, se eligió el pin 2
+del puerto D como nuestra entrada y se la configuró para que utilice el
+resistor de pull-up interno del microcontrolador, simplificando el circuito
+del pulsador, sólo es necesario conectar un extremo del pulsador a tierra y el
+otro al pin correspondiente a PD2. Se debe tener en cuenta que en esta
+configuración, PD2 se pondrá a 0 cuando el pulsador esté presionado.
 
-Si bien se podría utilizar la función wait provista en ese ejemplo para
-codificar el semáforo, una forma más sencilla es utilizar un timer, por lo que
-se decidió cambiar por este enfoque.
+Debido que en la vida real las condiciones no son perfectas y el ruido ambiente
+puede afectar las señales de nuestro microcontrolador, se implementará una
+función de antirrebote para evitar falsas activaciones.
 
-\section{Configurando Timer 0}
+Aprovechando el manejador de interrupciones del timer 0 definido en la
+actividad anterior (interrupción por overflow cada 10ms), resulta trivial
+crear una rutina de antirrebote. Simplemente seleccionamos un registro, en
+nuestro caso r23, y en cada interrupción rotamos su contenido un bit a la
+izquierda, luego leemos el pin PD2 y si el pulsador se encuentra presionado
+colocamos un 1 en el bit menos significativo del registro, caso contrario
+dejamos un 0. Una vez que el registro se encuentre completamente lleno de 1s,
+significa que el pulsador se encontró presionado durante al menos 80ms y
+podemos asumir que no es una falsa activación.
 
-Se eligió utilizar el timer 0 del procesador, ya que es un timer de uso
-general y nos permitirá crear una base de tiempo sobre la cual basar nuestra
-máquina de estados (más sobre la máquina de estados en las siguientes
-secciones).
+\section{Adaptación del código de semáforo}
 
-Para experimentar con el timer 0, primero se procedió a reemplazar la función
-wait del ejemplo blinky con el flag de overflow de dicho timer. Este flag es
-el bit TOV0 del registro TIFR0.
-
-Con el objetivo de tener un blink que apenas sea perceptible al ojo humano, se
-configuraron los bits CS[0:2] del registro TCCR0B para utilizar una base de
-tiempo de fclk/1024 (valor 0x05). Este valor da una frecuencia de
-16MHz / 1024 = 15,625kHz. Esto combinado con la cuenta de 8 bits del timer nos
-da un blink de aproximadamente 61Hz, lo cual es apenas visible, pero suficiente
-para poder ver el timer funcionando.
-
-Finalmente, se cambió de utilizar el chequeo del flag TOV0 en línea con el lazo
-principal a utilizar la interrupción de overflow del timer. Esto se consigue
-seteando el bit TOIE0 del registro TIMSK0, usando la instrucción SEI para
-habilitar las interrupciones globales y definiendo la rutina de manejo de
-interrupcion TIMER0{\_}OVF{\_}vect. Cabe aclarar que esta última rutina viene
-provista por el framework avr-libc que utiliza PlatformIO, caso contrario
-deberíamos proveer la instrucción jmp correcta en el vector de interrupciones.
-
-Con la interrupción del timer funcionando, estamos en condiciones de plantear
-la resolución del semáforo.
-
-\section{Resolución de un semáforo}
-
-La lógica de un semáforo se puede considerar como una máquina de estados con
-4 estados (enumerados en binario):
+En la actividad anterior teniamos una máquina de estado para el semáforo
+relativamente sencilla:
 
 \begin{itemize}
     \item 00: Luz roja encendida.
@@ -137,69 +123,32 @@ La lógica de un semáforo se puede considerar como una máquina de estados con
     \item 11: Luz amarilla encendida, cambiando a rojo.
 \end{itemize}
 
-Podemos ver un par de patrones en la lista anterior.
-En principio, todos los estados se pueden visitar simplemente incrementando el
-valor de la variable que contiene el estado.
-También se ve que el bit menos significativo nos define si el semáforo tiene
-encendida la luz amarilla o si está en verde o rojo y en caso de estar a 0,
-el segundo bit nos define que estamos en rojo cuando está a 0 y verde cuando
-está a 1.
-Todo esto nos será de utilidad a la hora de plantear el código.
-
-Sabiendo cómo será la máquina de estado, debemos primero definir una base de
-tiempo adecuada para poder iterar sobre los estados. Utilizando el timer 0
-que se describió en la sección anterior que tiene una frecuencia de cuenta de
-15,625 kHz, se decidió crear una base de tiempo de 10ms, la cual es pequeña,
-pero nos será de utilidad en futuras actividades para crear funciones de
-antirrebote. Para que la interrupción del timer se dispare cada 10ms,
-si una cuenta es de 1/15,625kHz = 64us = 0.064ms, entonces se necesitan
-156,25 cuentas. Podemos redondear a 156 y como el timer cuenta hasta 255,
-el registro TCNT0 deberá recargarse con el valor 255 - 156 = 99 cada vez que
-se genere la interrupción. Esta base de tiempo se puede complementar con otro
-contador por software para generar bases más largas.
-
-Con la base de tiempo definida y una primera aproximación de la máquina de
-estados, podemos empezar a definir dónde vivirán algunas de las variables
-necesarias. Dada la simplicidad de la aplicación y la gran cantidad de
-registros disponibles en el procesador, se dicidió utilizar algunos de estos
-para definir variables directamente, especificamente:
+Esta máquina de estado aún nos es útil, una vez el pulsador se presione se
+deberá proceder a realizar un recorrido completo por esta máquina de estado.
+De esta forma, podríamos considerar que se agrega un estado más a nuestra
+máquina.
 
 \begin{itemize}
-    \item R16 y R17: Se utilizarán como registros generales para operaciones varias.
-    \item R20: Mantendrá una base de tiempo para los cambios de estado del semáforo.
-    \item R21: Trabajará en conjunto con R20 para tener distintos tiempos en los distintos estados.
-    \item R22: Almacenará el estado de nuestro semáforo propiamente dicho.
+    \item 0xx: Luz verde encendida, esperando pulsador.
+    \item 100: Luz verde encendida.
+    \item 101: Luz amarilla encendida, cambiando a rojo.
+    \item 110: Luz roja encendida.
+    \item 111: Luz amarilla encendida, cambiando a verde.
 \end{itemize}
 
-También podemos definir los pines que se utilizarán para manejar las distintas
-luces:
+Los estados se reacomodaron ligeramente para simplificar la lógica del
+programa, pero se puede ver que nuestra máquina de estado original vive como
+un subestado de una nueva máquina en la que tenemos 2 estados:
 
 \begin{itemize}
-    \item PB0: Luz roja para autos.
-    \item PB1: Luz amarilla para autos.
-    \item PB2: Luz verde para autos.
-    \item PB3: Luz roja para peatones.
-    \item PB4: Luz verde para peatones.
+    \item Esperar presión del pulsador.
+    \item Realizar un ciclo de semáforo y volver a estado anterior.
 \end{itemize}
 
-Aún no hemos hablado sobre cómo será el manejo de las luces peatonales, pero si
-planteamos una máquina de estados similar a la del semáforo de autos:
-
-\begin{itemize}
-    \item 00: Luz peatonal verde encendida.
-    \item 01: Luz peatonal verde encendida.
-    \item 10: Luz peatonal roja encendida.
-    \item 11: Luz peatonal roja encendida.
-\end{itemize}
-
-Vemos que en realidad sólo tiene 2 estados, pero estos se pueden duplicar para
-que coincidan con nuestra máquina de estado original. Por lo tanto, en lugar
-de plantear otra máquina de estado, el código utilizará una única máquina y
-controlará ambos semáforos de forma adecuada en base al estado en el que se
-está.
-
-En este punto tenemos todos los elementos necesarios para plantear la
-resolución al problema.
+Con esto se puede ver que los cambios al código original serán mínimos, sólo
+debemos tener un lazo pequeño en nuestro programa principal que espera el
+pulsador, una vez presionado se utilizará otro lazo que realizará el ciclado
+de semáforo y al terminar volverá al lazo que espera el pulsador.
 
 \section{Código final}
 \lstinputlisting[style=atmegaAsm,language=atmegaAsm]{../src/main.S}

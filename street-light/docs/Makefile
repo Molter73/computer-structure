@@ -6,3 +6,6 @@ all: street-light.tex
 		--keep-intermediates \
 		--outdir build/ \
 		street-light.tex
+
+clean:
+	rm -rf build/
